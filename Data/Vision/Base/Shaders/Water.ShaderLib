@@ -1,0 +1,4125 @@
+FILEVERSION = 2.4.0.0;
+PLATFORM = DX9;
+
+//////////////////////////////////////////////////////////////////////////////
+SOURCECODE=$SOURCECODETAG{
+// Includes
+#include <Shaders/VisionCommon.inc>
+
+/////////////////////////////////////////////////////////////////////////////
+// Vertex shader sources
+/////////////////////////////////////////////////////////////////////////////
+#ifdef _VISION_DX11
+cbuffer g_GlobalConstantBufferFrame : register (b0)
+{
+  float4x4 WorldMatrix : packoffset(c4);
+  float4   timer      : packoffset(c16);  // Time: timer, time difference
+}
+cbuffer g_GlobalConstantBufferObject : register (b1)
+{
+  float4x4 matMVP     : packoffset(c4);   // model view projection matrix
+  float4x4 matMV     : packoffset(c0);   // model view matrix
+}
+#else
+  float4x4 matMV     : register(c0);
+  float4x4 matMVP     : register(c8);
+  float4x4 WorldMatrix : register(c12);
+  float4   timer      : register(c30);
+#endif
+
+#ifdef _VISION_PS3
+  float4   refPlaneS  : register(c64);
+  float4   refPlaneT  : register(c65);
+  float4   refPlaneQ  : register(c66);
+  float4   mmv0       : register(c67);
+  float4   mmv1       : register(c68);
+  float4   mmv2       : register(c69);
+  float4   mmvpos     : register(c70);
+  float4   BumpScroll : register(c71);
+  float4   Tiling     : register(c72);
+  float4 SpecLightDir : register(c73);
+  float4 SpecLightDir2 : register(c74);
+#elif defined(_VISION_DX11)
+cbuffer g_GlobalConstantBufferUserVS : register (b2)
+{
+  float4   refPlaneS  : packoffset(c0);
+  float4   refPlaneT  : packoffset(c1);
+  float4   refPlaneQ  : packoffset(c2);
+  float4   mmv0       : packoffset(c3);
+  float4   mmv1       : packoffset(c4);
+  float4   mmv2       : packoffset(c5);
+  float4   mmvpos     : packoffset(c6);
+  float4   BumpScroll : packoffset(c7);
+  float4   Tiling     : packoffset(c8);
+  float4 SpecLightDir : packoffset(c9);
+  float4 SpecLightDir2 : packoffset(c10);
+}
+
+#else
+  float4   refPlaneS;
+  float4   refPlaneT;
+  float4   refPlaneQ;
+  float4   mmv0;
+  float4   mmv1;
+  float4   mmv2;
+  float4   mmvpos;
+  float4   BumpScroll;
+  float4   Tiling;
+  float4 SpecLightDir;
+  float4 SpecLightDir2;
+#endif
+
+struct VS_IN
+{
+  float3   ObjPos     : POSITION;
+  float2   UVBase     : TEXCOORD0;
+};
+
+struct VS_OUT                                 
+{                                             
+  float4   ProjPos    : SV_Position;              
+  float4   UVProj     : TEXCOORD0;
+  float2   UVBase     : TEXCOORD1;
+};                                             
+
+struct VS_IN_SPEC
+{
+  float3 ObjPos  : POSITION;
+  float3 Normal  : NORMAL;
+  float2 UVBase  : TEXCOORD0;
+  float2 UVLight : TEXCOORD1;                  
+  float3 Tangent : TEXCOORD2;
+};
+
+struct VS_OUT_SPEC
+{
+  float4 ProjPos   : SV_Position;
+  float4 UVProj    : TEXCOORD0;
+  float2 UVBase    : TEXCOORD1;
+  float2 UVNorm    : TEXCOORD2;
+  float2 UVNorm2   : TEXCOORD3;
+  float3 vCamDir   : TEXCOORD4;
+  float3 vSpecDir  : TEXCOORD5;
+  float3 vSpecDir2 : TEXCOORD6;
+};
+
+#include "ShaderHelpers.inc"
+
+// helper function to compute texture coordinates of reflected render target.
+float4 GetProjectedTexCoords(float3 inPos)
+{
+  float4 eyePos;
+  float4 InPos4 = float4(inPos, 1.0f);
+  eyePos.x = dot(InPos4, mmv0);
+  eyePos.y = dot(InPos4, mmv1);
+  eyePos.z = dot(InPos4, mmv2);
+  eyePos.w = 1.0f;
+  eyePos += mmvpos;
+
+  float4 outUV;
+  outUV.w = dot(refPlaneQ, eyePos);
+  outUV.x = dot(refPlaneS, eyePos)*0.5f + 0.5f*outUV.w;
+  outUV.y = -dot(refPlaneT, eyePos)*0.5f + 0.5f*outUV.w;
+  outUV.z = 0.0f;
+  return outUV;
+}
+
+// base vertex shader
+VS_OUT vs_main( VS_IN In )
+{
+  VS_OUT Out;
+  Out.ProjPos = mul( matMVP, float4(In.ObjPos, 1.0f) );
+  Out.UVProj = GetProjectedTexCoords(In.ObjPos);
+  
+  // forward base coordinates for bumpmap
+  Out.UVBase = In.UVBase;
+  return Out;
+}
+
+// base vertex shader with scrolling
+VS_OUT vs_main_scroll( VS_IN In )
+{                     
+  VS_OUT Out;
+  Out.ProjPos = mul( matMVP, float4(In.ObjPos, 1.0f) );
+  Out.UVProj = GetProjectedTexCoords(In.ObjPos);
+  
+  // forward base coordinates for bumpmap
+  Out.UVBase = (In.UVBase + timer.xx*BumpScroll) * Tiling;
+  return Out;
+}
+
+// vertex shader with scrolling, 2x bumpmap, 2x specular light
+VS_OUT_SPEC vs_main_spec( VS_IN_SPEC In )
+{
+  VS_OUT_SPEC Out;
+  Out.ProjPos = mul( matMVP, float4(In.ObjPos, 1.0f) );
+  Out.UVProj = GetProjectedTexCoords(In.ObjPos);
+  
+  Out.UVBase  = In.UVBase;
+  Out.UVNorm  = (In.UVBase + timer.xx * BumpScroll.xy) * Tiling.xy;
+  Out.UVNorm2 = (In.UVBase + timer.xx * BumpScroll.zw) * Tiling.zw;
+  
+  float3 normal = mul((float3x3)matMV, In.Normal);
+  float3 tangent = mul((float3x3)matMV, In.Tangent);
+  float fMul = sign(dot(tangent, tangent) - 2.0f);
+  normal = normalize(normal);
+  tangent = normalize(tangent);
+  float3 biNormal = cross(tangent, normal) * fMul;
+
+  float4 mvv = -mul(matMV, float4(In.ObjPos, 1.0f));
+  Out.vCamDir = GetVectorInTextureSpace(mvv.xyz, tangent, normal, biNormal);
+  float3 vSpecLight = normalize(mul((float3x3)WorldMatrix, SpecLightDir.xyz));
+  Out.vSpecDir = GetVectorInTextureSpace(vSpecLight, tangent, normal, biNormal);
+  float3 vSpecLight2 = normalize(mul((float3x3)WorldMatrix, SpecLightDir2.xyz));
+  Out.vSpecDir2 = GetVectorInTextureSpace(vSpecLight2, tangent, normal, biNormal);  
+  return Out;
+}
+  }$SOURCECODETAG
+
+//////////////////////////////////////////////////////////////////////////////
+
+RENDER_STATE RSC_0 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_1 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_2 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_3 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_4 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_5 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_6 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_7 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_8 {
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_9 {
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_10 {
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_11 {
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_12 {
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_13 {
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_14 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+  cullmode = front;
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_15 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+  cullmode = front;
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_16 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_17 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+
+  //------ Tesselation State Group ------
+}
+
+RENDER_STATE RSC_18 {
+  trackingmask = 1536;
+  compiledClass = "VWaterShaderPass";
+
+  //------ Blend State Group ------
+  alphatestref = 100;
+  alphatestfunc = less_or_equal;
+
+  //------ Depth Stencil Group ------
+  depthwriteenabled = false;
+
+  //------ Rasterizer State Group ------
+  cullmode = front;
+
+  //------ Tesselation State Group ------
+}
+
+SHADER WaterComplete {
+  RenderStateContainerID = 0;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = -616;
+  supportedplatforms = 615;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+//#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOAM
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_CAUSTICS
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+#define USE_TIME_OF_DAY
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER WaterSM20 {
+  RenderStateContainerID = 1;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = 0;
+  supportedplatforms = 615;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_linear;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#if defined(_VISION_DX9) && !defined(_VISION_XENON)
+  #define WATER_SM20
+#endif  
+#define USE_FOG
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_2_0;
+  vs_mintargetDX11 = vs_4_0_level_9_1;
+  svs_mintarget = vs_2_0;
+  svs_mintargetDX11 = vs_4_0_level_9_1;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_REFRACTION
+#define WATER_REFLECTION
+//#define WATER_SPECULARITY
+#define USE_FOG
+#define WATER_NO_LAYERED_FOG
+
+#if defined(_VISION_DX9) && !defined(_VISION_XENON)
+  #define WATER_SM20
+#endif  
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_2_0;
+  ps_mintargetDX11 = ps_4_0_level_9_1;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER WaterNoFoamNoCaustics {
+  RenderStateContainerID = 2;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = 0;
+  supportedplatforms = 615;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_linear;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0_level_9_3;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0_level_9_3;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0_level_9_3;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER WaterNoFoam {
+  RenderStateContainerID = 3;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = -616;
+  supportedplatforms = 615;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0_level_9_3;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0_level_9_3;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_CAUSTICS
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0_level_9_3;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER WaterCompleteTimeOfDay {
+  RenderStateContainerID = 4;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = -552;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_1;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_1;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOAM
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_CAUSTICS
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+#define USE_TIME_OF_DAY
+#define WATER_DEFERRED
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_1;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER WaterNoFoamNoCausticsTimeOfDay {
+  RenderStateContainerID = 5;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = -552;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_linear;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0_level_9_3;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0_level_9_3;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+#define USE_TIME_OF_DAY
+#define WATER_DEFERRED
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0_level_9_3;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER WaterNoFoamTimeOfDay {
+  RenderStateContainerID = 6;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = 0;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0_level_9_3;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0_level_9_3;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_CAUSTICS
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+#define USE_TIME_OF_DAY
+#define WATER_DEFERRED
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0_level_9_3;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER WaterSimpleTimeOfDay {
+  RenderStateContainerID = 7;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = -552;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_linear;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "FoamTexture";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#if defined(_VISION_DX9) && !defined(_VISION_XENON)
+  #define WATER_SM20
+#endif  
+#define USE_FOG
+#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_2_0;
+  vs_mintargetDX11 = vs_4_0_level_9_3;
+  svs_mintarget = vs_2_0;
+  svs_mintargetDX11 = vs_4_0_level_9_3;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_REFRACTION
+#define WATER_REFLECTION
+//#define WATER_SPECULARITY
+#define USE_FOG
+#define USE_TIME_OF_DAY
+
+#define WATER_DEFERRED
+
+#if defined(_VISION_DX9) && !defined(_VISION_XENON)
+  #define WATER_SM20
+#endif  
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_2_b;
+  ps_mintargetDX11 = ps_4_0_level_9_3;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER DisplacementWaterComplete {
+  RenderStateContainerID = 8;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = 0;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 1;
+  SAMPLER_VS 0 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNoiseFP32.dds";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = mirror,mirror,mirror;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+#define USE_VERTEX_DISPLACEMENT
+//#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOAM
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_CAUSTICS
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+#define USE_VERTEX_DISPLACEMENT
+
+//#define USE_TIME_OF_DAY
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER DisplacementWaterCompleteTimeOfDay {
+  RenderStateContainerID = 9;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = 0;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 1;
+  SAMPLER_VS 0 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNoiseFP32.dds";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = mirror,mirror,mirror;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+#define USE_VERTEX_DISPLACEMENT
+#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOAM
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_CAUSTICS
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+#define USE_VERTEX_DISPLACEMENT
+#define USE_TIME_OF_DAY
+#define WATER_DEFERRED
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER DisplacementWaterNoFoam {
+  RenderStateContainerID = 10;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = 0;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 1;
+  SAMPLER_VS 0 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNoiseFP32.dds";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = mirror,mirror,mirror;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+#define USE_VERTEX_DISPLACEMENT
+//#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_CAUSTICS
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+#define USE_VERTEX_DISPLACEMENT
+
+//#define USE_TIME_OF_DAY
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER DisplacementWaterNoFoamTimeOfDay {
+  RenderStateContainerID = 11;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = -552;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 1;
+  SAMPLER_VS 0 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNoiseFP32.dds";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = mirror,mirror,mirror;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+#define USE_VERTEX_DISPLACEMENT
+#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_CAUSTICS
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+#define USE_VERTEX_DISPLACEMENT
+#define USE_TIME_OF_DAY
+#define WATER_DEFERRED
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER DisplacementWaterNoFoamNoCaustics {
+  RenderStateContainerID = 12;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = 0;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 1;
+  SAMPLER_VS 0 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNoiseFP32.dds";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = mirror,mirror,mirror;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+#define USE_VERTEX_DISPLACEMENT
+//#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+#define USE_VERTEX_DISPLACEMENT
+
+//#define USE_TIME_OF_DAY
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER DisplacementWaterNoFoamNoCausticsTimeOfDay {
+  RenderStateContainerID = 13;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = 0;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 1;
+  SAMPLER_VS 0 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNoiseFP32.dds";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = mirror,mirror,mirror;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+#define USE_VERTEX_DISPLACEMENT
+#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+#define USE_VERTEX_DISPLACEMENT
+#define USE_TIME_OF_DAY
+#define WATER_DEFERRED
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER UnderWater {
+  RenderStateContainerID = 14;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = 0;
+  supportedplatforms = 615;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+//#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0_level_9_3;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0_level_9_3;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+//#define WATER_FOAM
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_CAUSTICS
+#define WATER_REFLECTION
+//#define WATER_SPECULARITY
+//#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+//#define USE_TIME_OF_DAY
+
+// important defines for the underwater part:
+#define WATER_FLIP_NORMAL
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0_level_9_3;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER UnderWaterDeferred {
+  RenderStateContainerID = 15;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = 0;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Mainlens.DDS";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\PerlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+//#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_0_level_9_3;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_0_level_9_3;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+//#define WATER_FOAM
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_CAUSTICS
+#define WATER_REFLECTION
+//#define WATER_SPECULARITY
+//#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+//#define USE_TIME_OF_DAY
+
+// important defines for the underwater part:
+#define WATER_FLIP_NORMAL
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_0_level_9_3;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER WaterNoCausticsTimeOfDay {
+  RenderStateContainerID = 16;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = -552;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+#define USE_TIME_OF_DAY
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_1;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_1;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOAM
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+#define USE_TIME_OF_DAY
+#define WATER_DEFERRED
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_1;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER WaterNoCaustics {
+  RenderStateContainerID = 17;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = -552;
+  supportedplatforms = 551;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#define USE_FOG
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_3_0;
+  vs_mintargetDX11 = vs_4_1;
+  svs_mintarget = vs_3_0;
+  svs_mintargetDX11 = vs_4_1;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_FOAM
+#define WATER_FOG
+#define WATER_REFRACTION
+#define WATER_REFLECTION
+#define WATER_SPECULARITY
+#define HAS_DEPTH_INFORMATION
+#define USE_FOG
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_3_0;
+  ps_mintargetDX11 = ps_4_1;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+SHADER UnderWaterSM20 {
+  RenderStateContainerID = 18;
+  IsAutoGenerated = false;
+  UsesPermutationVariables = false;
+  streammask = 17;
+  RecompilationRequiredOnPlatforms = -616;
+  supportedplatforms = 615;
+  compileflags = 0;
+  hs_controlpoints = 3;
+
+  //------ Texture samplers ------
+  numsamplers_vs = 0;
+  numsamplers_hs = 0;
+  numsamplers_ds = 0;
+  numsamplers_gs = 0;
+  numsamplers_ps = 6;
+  SAMPLER_PS 0 = {
+    samplername = "";
+    texturetype = base_texture;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = anisotropic;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 1024.000000;
+  }
+  SAMPLER_PS 1 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 2 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\mainlens.dds";
+    filtermode = default;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 3 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\perlinNormalHeight.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 4 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "\Textures\foam.dds";
+    filtermode = default;
+    textureaddressmode = wrap,wrap,wrap;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  SAMPLER_PS 5 = {
+    samplername = "";
+    texturetype = custom;
+    textureindex = 0;
+    texturefile = "";
+    filtermode = min_mag_mip_point;
+    textureaddressmode = clamp,clamp,clamp;
+    m_fLodBias = 0.000000;
+    m_iMaxAnisotropy = 1;
+    comparisonfunc = less;
+    bordercolor = 0.000000,0.000000,0.000000,1.000000;
+    minlod = 0.000000;
+    maxlod = 0.000000;
+  }
+  numsamplers_cs = 0;
+
+  //------ vertex shader source ------
+
+  vs_sourcecode=$SOURCECODETAG{
+//
+#if defined(_VISION_DX9) && !defined(_VISION_XENON)
+  #define WATER_SM20
+#endif  
+#define USE_FOG
+
+#include "WaterShaderVS.inc"
+  }$SOURCECODETAG
+
+  vs_function = "vs_main_water";
+  vs_mintarget = vs_2_0;
+  vs_mintargetDX11 = vs_4_0_level_9_1;
+  svs_mintarget = vs_2_0;
+  svs_mintargetDX11 = vs_4_0_level_9_1;
+
+  //------ hull shader source ------
+  hs_mintarget = hs_5_0;
+
+  //------ domain shader source ------
+  ds_mintarget = ds_5_0;
+
+  //------ geometry shader source ------
+  gs_mintarget = gs_4_0;
+  gs_mintargetDX11 = gs_4_0;
+
+  //------ pixel shader source ------
+
+  ps_sourcecode=$SOURCECODETAG{
+//
+
+#define WATER_FROM_NORMAL
+#define WATER_REFRACTION
+#define WATER_REFLECTION
+#define USE_FOG
+#define WATER_NO_LAYERED_FOG
+
+#if defined(_VISION_DX9) && !defined(_VISION_XENON)
+  #define WATER_SM20
+#endif  
+
+// important defines for the underwater part:
+#define WATER_FLIP_NORMAL
+
+#include "WaterShaderPS.inc"
+  }$SOURCECODETAG
+
+  ps_function = "ps_main";
+  ps_mintarget = ps_2_0;
+  ps_mintargetDX11 = ps_4_0_level_9_1;
+
+  //------ compute shader source ------
+  cs_mintarget = cs_4_0;
+
+  //------ platform specific bytecode ------
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+EFFECT Water_AllSupportedFeatures_Deferred {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"causticsParams","Caustics Parameters: x=uv scale, y=scroll speed, z=normal roughness, w=intensity","0.0008,0.04,1.4,0.5",float4,none,""};
+  PARAMCOMMENT={"foamFadeParams","Foam Parameters: x=depth at which foam reaches full intensity, y=depth at which foam is fully faded out, z=wave foam strength, w=general foam strength","25.0,85.0,1.0,1.0",float4,none,""};
+  PARAMCOMMENT={"foamWobble","Foam Wobbling: x=Speed, y=Strength, z=UV Scale","4.0,0.0005,0.0008",float3,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  PARAMCOMMENT={"FoamTexture","Which texture to use for the foam effect.","\Textures\foam.dds",texture,texturefile,""};
+  TECHNIQUE "SM30"
+  {
+    passes="WaterCompleteTimeOfDay","UnderWaterDeferred";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT Water_Simple_Deferred {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,1.0",float3,color,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"FoamTexture","","\Textures\foam.dds",texture,texturefile,""};
+  TECHNIQUE "new_technique"
+  {
+    passes="WaterSimpleTimeOfDay";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT Water_NoFoam_NoCaustics_Deferred {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  TECHNIQUE "new_technique"
+  {
+    passes="WaterNoFoamNoCausticsTimeOfDay";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT Water_NoCaustics_Deferred {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"foamFadeParams","Foam Parameters: x=depth at which foam reaches full intensity, y=depth at which foam is fully faded out, z=wave foam strength, w=general foam strength","25.0,85.0,1.0,1.0",float4,none,""};
+  PARAMCOMMENT={"foamWobble","Foam Wobbling: x=Speed, y=Strength, z=UV Scale","4.0,0.0005,0.0008",float3,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  PARAMCOMMENT={"FoamTexture","Which texture to use for the foam effect.","\Textures\foam.dds",texture,none,""};
+  TECHNIQUE "SM30"
+  {
+    passes="WaterNoCausticsTimeOfDay";
+    passtype = Auto;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "SM20"
+  {
+    passes="WaterSM20";
+    passtype = Auto;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT Water_NoFoam_Deferred {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"causticsParams","Caustics Parameters: x=uv scale, y=scroll speed, z=normal roughness, w=intensity","0.0008,0.04,1.4,0.5",float4,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  TECHNIQUE "SM30"
+  {
+    passes="WaterNoFoamTimeOfDay";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "SM20"
+  {
+    passes="WaterSM20";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT Water_AllSupportedFeatures {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"causticsParams","Caustics Parameters: x=uv scale, y=scroll speed, z=normal roughness, w=intensity","0.0008,0.04,1.4,0.5",float4,none,""};
+  PARAMCOMMENT={"foamFadeParams","Foam Parameters: x=depth at which foam reaches full intensity, y=depth at which foam is fully faded out, z=wave foam strength, w=general foam strength","25.0,85.0,1.0,1.0",float4,none,""};
+  PARAMCOMMENT={"foamWobble","Foam Wobbling: x=Speed, y=Strength, z=UV Scale","4.0,0.0005,0.0008",float3,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  PARAMCOMMENT={"FoamTexture","","\Textures\foam.dds",texture,texturefile,""};
+  TECHNIQUE "SM30"
+  {
+    passes="WaterComplete","UnderWater";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "SM20"
+  {
+    passes="WaterSM20","UnderWaterSM20";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT Water_Simple {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,1.0",float3,color,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"FoamTexture","","\Textures\foam.dds",texture,texturefile,""};
+  TECHNIQUE "new_technique"
+  {
+    passes="WaterSM20";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT Water_NoFoam_NoCaustics {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  TECHNIQUE "new_technique"
+  {
+    passes="WaterNoFoamNoCaustics";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "SM20"
+  {
+    passes="WaterSM20";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT Water_NoCaustics {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"foamFadeParams","Foam Parameters: x=depth at which foam reaches full intensity, y=depth at which foam is fully faded out, z=wave foam strength, w=general foam strength","25.0,85.0,1.0,1.0",float4,none,""};
+  PARAMCOMMENT={"foamWobble","Foam Wobbling: x=Speed, y=Strength, z=UV Scale","4.0,0.0005,0.0008",float3,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  PARAMCOMMENT={"FoamTexture","Which texture to use for the foam effect.","\Textures\foam.dds",texture,none,""};
+  TECHNIQUE "SM30"
+  {
+    passes="WaterNoCaustics";
+    passtype = Auto;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "SM20"
+  {
+    passes="WaterSM20";
+    passtype = Auto;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT Water_NoFoam {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"causticsParams","Caustics Parameters: x=uv scale, y=scroll speed, z=normal roughness, w=intensity","0.0008,0.04,1.4,0.5",float4,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  TECHNIQUE "SM30"
+  {
+    passes="WaterNoFoam";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "SM20"
+  {
+    passes="WaterSM20";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT DisplacementWater_AllSupportedFeatures {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMapVS","","\perlinNoiseFP32.dds",texture,none,""};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"causticsParams","Caustics Parameters: x=uv scale, y=scroll speed, z=normal roughness, w=intensity","0.0008,0.04,1.4,0.5",float4,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  PARAMCOMMENT={"waterDisplacementStrength","x=displacement scale in units, y=displacement distance fading","50.0, 1.0",float2,none,""};
+  PARAMCOMMENT={"foamFadeParams","Foam Parameters: x=depth at which foam reaches full intensity, y=depth at which foam is fully faded out, z=wave foam strength, w=general foam strength","25.0,85.0,1.0,1.0",float4,none,""};
+  PARAMCOMMENT={"foamWobble","Foam Wobbling: x=Speed, y=Strength, z=UV Scale","4.0,0.0005,0.0008",float3,none,""};
+  PARAMCOMMENT={"FoamTexture","","\Textures\foam.dds",texture,texturefile,""};
+  TECHNIQUE "SM30"
+  {
+    passes="DisplacementWaterComplete";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "NoDisplacement"
+  {
+    passes="WaterComplete";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "SM20"
+  {
+    passes="WaterSM20";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT DisplacementWater_AllSupportedFeatures_Deferred {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMapVS","","\perlinNoiseFP32.dds",texture,none,""};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"causticsParams","Caustics Parameters: x=uv scale, y=scroll speed, z=normal roughness, w=intensity","0.0008,0.04,1.4,0.5",float4,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  PARAMCOMMENT={"waterDisplacementStrength","x=displacement scale in units, y=displacement distance fading","50.0, 1.0",float2,none,""};
+  PARAMCOMMENT={"foamFadeParams","Foam Parameters: x=depth at which foam reaches full intensity, y=depth at which foam is fully faded out, z=wave foam strength, w=general foam strength","25.0,85.0,1.0,1.0",float4,none,""};
+  PARAMCOMMENT={"foamWobble","Foam Wobbling: x=Speed, y=Strength, z=UV Scale","4.0,0.0005,0.0008",float3,none,""};
+  PARAMCOMMENT={"FoamTexture","","\Textures\foam.dds",texture,texturefile,""};
+  TECHNIQUE "SM30"
+  {
+    passes="DisplacementWaterCompleteTimeOfDay";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "NoDisplacement"
+  {
+    passes="WaterCompleteTimeOfDay";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "SM20"
+  {
+    passes="WaterSimpleTimeOfDay";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT DisplacementWater_NoFoam {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMapVS","","\perlinNoiseFP32.dds",texture,none,""};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"causticsParams","Caustics Parameters: x=uv scale, y=scroll speed, z=normal roughness, w=intensity","0.0008,0.04,1.4,0.5",float4,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  PARAMCOMMENT={"waterDisplacementStrength","x=displacement scale in units, y=displacement distance fading","50.0, 1.0",float2,none,""};
+  TECHNIQUE "SM30"
+  {
+    passes="DisplacementWaterNoFoam";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "NoDisplacement"
+  {
+    passes="WaterNoFoam";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "SM20"
+  {
+    passes="WaterSM20";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT DisplacementWater_NoFoam_Deferred {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMapVS","","\perlinNoiseFP32.dds",texture,none,""};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"causticsParams","Caustics Parameters: x=uv scale, y=scroll speed, z=normal roughness, w=intensity","0.0008,0.04,1.4,0.5",float4,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  PARAMCOMMENT={"waterDisplacementStrength","x=displacement scale in units, y=displacement distance fading","50.0, 1.0",float2,none,""};
+  TECHNIQUE "SM30"
+  {
+    passes="DisplacementWaterNoFoamTimeOfDay";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "NoDisplacement"
+  {
+    passes="WaterNoFoamTimeOfDay";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "SM20"
+  {
+    passes="WaterSimpleTimeOfDay";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT DisplacementWater_NoFoam_NoCaustics {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMapVS","","\perlinNoiseFP32.dds",texture,none,""};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  PARAMCOMMENT={"waterDisplacementStrength","x=displacement scale in units, y=displacement distance fading","50.0, 1.0",float2,none,""};
+  TECHNIQUE "SM30"
+  {
+    passes="DisplacementWaterNoFoamNoCaustics";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "NoDisplacement"
+  {
+    passes="WaterNoFoamNoCaustics";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "SM20"
+  {
+    passes="WaterSM20";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+
+EFFECT DisplacementWater_NoFoam_NoCaustics_Deferred {
+  DESCRIPTION = {};
+  PARAMCOMMENT={"NormalMapVS","","\perlinNoiseFP32.dds",texture,none,""};
+  PARAMCOMMENT={"NormalMap","","\perlinNormalHeight.dds",texture,none,""};
+  PARAMCOMMENT={"waterNormalParams","x=water texture scroll speed, y=normal map uv scaling, z=normal map roughness","0.04,0.0008,1.0",float3,none,""};
+  PARAMCOMMENT={"waterFlowDirection","Flow Direction of the Water in UV space","0.0,0.0",float2,none,""};
+  PARAMCOMMENT={"waterOpacity","Opacity of the water (higher values mean higher opacity)","0.002",float,none,""};
+  PARAMCOMMENT={"brightWaterColor","Color of water in full sunlight","0.078,0.518,0.7",float3,color,""};
+  PARAMCOMMENT={"darkWaterColor","Color of water at maximum water depth","0.004,0.002,0.145",float3,color,""};
+  PARAMCOMMENT={"waterTintColor","Tint color for water (only if no depth extinction is used)","0.7,0.8,0.9",float3,color,""};
+  PARAMCOMMENT={"chromaticExtinction","Chromatic extinction in Water. High values mean the respective color component is faded out more quickly.","0.833,0.357,0.263",float3,none,""};
+  PARAMCOMMENT={"sunColor","Sun color","1.0,0.9,0.8",float3,color,""};
+  PARAMCOMMENT={"sunDirection","Sun Direction","0.7,-0.7,0.7",float3,none,""};
+  PARAMCOMMENT={"reflectionParams","Reflection Parameters: x=normal scale, y=fresnel power, z=fresnel scale, w=reflection baseline strength","0.1,5.0,0.5,0.5",float4,none,""};
+  PARAMCOMMENT={"refractionDepthScale","Refraction Strength","1.0",float,none,""};
+  PARAMCOMMENT={"specularParams","Specular Parameters: x=specular exponent, y=specular multiplier","512.0,1.0",float2,none,""};
+  PARAMCOMMENT={"fShoreFadeoutRange","Value that defines at what depth the shore starts to fade out (lower values mean a more smooth fadeout)","0.1",float,none,""};
+  PARAMCOMMENT={"waterDisplacementStrength","x=displacement scale in units, y=displacement distance fading","50.0, 1.0",float2,none,""};
+  TECHNIQUE "SM30"
+  {
+    passes="DisplacementWaterNoFoamNoCausticsTimeOfDay";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "NoDisplacement"
+  {
+    passes="WaterNoFoamNoCausticsTimeOfDay";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+  TECHNIQUE "SM20"
+  {
+    passes="WaterSimpleTimeOfDay";
+    passtype = TransparentPass;
+    IsPermutationTechnique=false;
+    IsAutoGenerated=false;
+  }
+}
+

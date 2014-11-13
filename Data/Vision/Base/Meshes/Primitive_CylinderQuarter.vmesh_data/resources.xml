@@ -1,0 +1,8 @@
+<root>
+    <Resources Version="1" Count="4" PathType="Project">
+        <Resource Manager="FILE" Filename="Meshes/Primitive_CylinderQuarter.vmesh_data\materials.xml" OwnerRes="3" Size="468" />
+        <Resource Manager="EffectLibs" Filename="Shaders\vMaterial.ShaderLib" Size="392352" />
+        <Resource Manager="Textures" Filename="Textures\GridGrey.tga" CustomInt="1,64" Size="349524" />
+        <Resource Manager="Static/Dynamic Meshes" Filename="Meshes/Primitive_CylinderQuarter.vmesh" CustomInt="1,1" Size="56" />
+    </Resources>
+</root>

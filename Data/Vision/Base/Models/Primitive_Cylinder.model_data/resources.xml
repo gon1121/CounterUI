@@ -1,0 +1,8 @@
+<root>
+    <Resources Version="1" Count="4" PathType="Project">
+        <Resource Manager="FILE" Filename="Models/Primitive_Cylinder.model_data\materials.xml" OwnerRes="3" Size="467" />
+        <Resource Manager="EffectLibs" Filename="Shaders\MobileShaders.ShaderLib" Size="3540544" />
+        <Resource Manager="Textures" Filename="Textures\GridGrey.tga" CustomInt="1,64" Size="349524" />
+        <Resource Manager="Static/Dynamic Meshes" Filename="Models/Primitive_Cylinder.model" CustomInt="1,2" Size="56" />
+    </Resources>
+</root>
