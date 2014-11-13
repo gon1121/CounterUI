@@ -2,7 +2,7 @@
  *
  * Confidential Information of Telekinesys Research Limited (t/a Havok). Not for disclosure or distribution without Havok's
  * prior written consent. This software contains code, techniques and know-how which is confidential and proprietary to Havok.
- * Product and Trade Secret source code contains trade secrets of Havok. Havok Software (C) Copyright 1999-2014 Telekinesys Research Limited t/a Havok. All Rights Reserved. Use of this software is subject to the terms of an end user license agreement.
+ * Product and Trade Secret source code contains trade secrets of Havok. Havok Software (C) Copyright 1999-2013 Telekinesys Research Limited t/a Havok. All Rights Reserved. Use of this software is subject to the terms of an end user license agreement.
  *
  */
 
@@ -11,14 +11,30 @@
 
 #include <Vision/Runtime/Framework/VisionApp/Modules/VHelp.hpp>
 
+#include <Vision/Runtime/EnginePlugins/ThirdParty/ScaleformEnginePlugin/VScaleformMovie.hpp>
+#include <Vision/Runtime/EnginePlugins/ThirdParty/ScaleformEnginePlugin/VScaleformVariable.hpp>
+#include <Vision/Runtime/EnginePlugins/VisionEnginePlugin/Input/VFreeCamera.hpp>
+
+//#include "GFx/GFx_Player.h"
+
 // Use the following line to initialize a plugin that is statically linked.
 // Note that only Windows platform links plugins dynamically (on Windows you can comment out this line).
 VIMPORT IVisPlugin_cl* GetEnginePlugin_CounterUIPlugin();
+VIMPORT IVisPlugin_cl* GetEnginePlugin_vScaleformPlugin();
 
-class CounterUIApplicationClass : public VAppImpl
+#define AS_VERSION_2 2
+#define AS_VERSION_3 3
+#define CURRENT_AS_VERSION AS_VERSION_2
+
+class CounterUIApplicationClass : public VAppImpl, public IVisCallbackHandler_cl
 {
 public:
-  CounterUIApplicationClass() {}
+  CounterUIApplicationClass() 
+    : m_sMovieName("")
+    , m_spMovie(NULL)
+    , m_spMouse(NULL)
+  {}
+
   virtual ~CounterUIApplicationClass() {}
 
   virtual void SetupAppConfig(VisAppConfig_cl& config) HKV_OVERRIDE;
@@ -28,6 +44,13 @@ public:
   virtual void AfterSceneLoaded(bool bLoadingSuccessful) HKV_OVERRIDE;
   virtual bool Run() HKV_OVERRIDE;
   virtual void DeInit() HKV_OVERRIDE;
+
+  void OnHandleCallback(IVisCallbackDataObject_cl *pData) HKV_OVERRIDE;
+
+private:
+  VString m_sMovieName;
+  VScaleformMovieInstancePtr m_spMovie;
+  VisScreenMaskPtr m_spMouse;
 };
 
 VAPP_IMPLEMENT_SAMPLE(CounterUIApplicationClass);
@@ -45,7 +68,7 @@ void CounterUIApplicationClass::SetupAppConfig(VisAppConfig_cl& config)
   config.m_videoConfig.m_iYPos = 50;   // Set the Window position Y if not in fullscreen.
 
   // Name to be displayed in the windows title bar.
-  config.m_videoConfig.m_szWindowTitle = "CounterUI";
+  config.m_videoConfig.m_szWindowTitle = "StandAlone Project Template";
 
   config.m_videoConfig.m_bWaitVRetrace = true;
 
@@ -69,6 +92,7 @@ void CounterUIApplicationClass::PreloadPlugins()
   // you still need to statically link your plugin library (e.g. on mobile platforms) through project
   // Properties, Linker, Additional Dependencies.
   VISION_PLUGIN_ENSURE_LOADED(CounterUIPlugin);
+  VISION_PLUGIN_ENSURE_LOADED(vScaleformPlugin);
 }
 
 //---------------------------------------------------------------------------------------------------------
@@ -81,6 +105,8 @@ void CounterUIApplicationClass::Init()
   VisAppLoadSettings settings("Scenes/Default.vscene");
   settings.m_customSearchPaths.Append(":template_root/Assets");
   LoadScene(settings);
+
+  VOnExternalInterfaceCall::OnExternalInterfaceCallback += this;
 }
 
 //---------------------------------------------------------------------------------------------------------
@@ -94,11 +120,27 @@ void CounterUIApplicationClass::AfterSceneLoaded(bool bLoadingSuccessful)
   help.Append("");
   RegisterAppModule(new VHelp(help));
 
-  // Create a mouse controlled camera (set above the ground so that we can see the ground)
-  Vision::Game.CreateEntity("VisMouseCamera_cl", hkvVec3(0.0f, 0.0f, 170.0f));
+  // Create a free camera
+  VFreeCamera* pFreeCamera = vstatic_cast<VFreeCamera*>(Vision::Game.CreateEntity("VFreeCamera", hkvVec3::ZeroVector()));
+  pFreeCamera->SetThinkFunctionStatus(false);
+  
+  // Create the mouse cursor
+  m_spMouse = new VisScreenMask_cl("Textures\\UI\\mouseNorm.TGA");
+  m_spMouse->SetTransparency(VIS_TRANSP_ALPHA);
+  m_spMouse->SetVisible(true);
+  VScaleformManager::GlobalManager().SetHandleCursorInput(true);
 
-  // Add other initial game code here
-  // [...]
+  #if CURRENT_AS_VERSION == AS_VERSION_2
+    m_sMovieName = "Flash\\counter_ui_as2.swf";
+  #else
+    m_sMovieName = "Flash\\counter_ui_as3.swf";
+  #endif
+  
+  m_spMovie = VScaleformManager::GlobalManager().LoadMovie(m_sMovieName);
+  if (m_spMovie==NULL)
+  {
+    hkvLog::FatalError("Could not load movie: %s", m_sMovieName);
+  }
 }
 
 //---------------------------------------------------------------------------------------------------------
@@ -106,6 +148,10 @@ void CounterUIApplicationClass::AfterSceneLoaded(bool bLoadingSuccessful)
 //---------------------------------------------------------------------------------------------------------
 bool CounterUIApplicationClass::Run()
 {
+  float x,y;
+  VScaleformManager::GlobalManager().GetCursorPos(x,y);
+  m_spMouse->SetPos(x,y);
+
   return true;
 }
 
@@ -113,12 +159,67 @@ void CounterUIApplicationClass::DeInit()
 {
   // De-Initialization
   // [...]
+  VOnExternalInterfaceCall::OnExternalInterfaceCallback -= this;
 }
 
+//---------------------------------------------------------------------------------------------------------
+// Receive command callbacks and external interface calls.
+//---------------------------------------------------------------------------------------------------------
+void CounterUIApplicationClass::OnHandleCallback(IVisCallbackDataObject_cl *pData)
+{
+  if(pData->m_pSender == &VOnExternalInterfaceCall::OnExternalInterfaceCallback)
+  {  
+    VOnExternalInterfaceCall *pExternalCall = (VOnExternalInterfaceCall *)pData;
+
+    if(pExternalCall->m_sMethodName == "resetButton")
+    {
+      Vision::Message.Add(1, "Reset button pressed");
+
+      #if CURRENT_AS_VERSION == AS_VERSION_2
+        VScaleformVariable counterVar = m_spMovie->GetVariable("UI.count");
+      #else
+        VScaleformVariable counterVar = m_spMovie->GetVariable("_root.globalCount");
+      #endif
+
+      counterVar.SetNumber(0);
+      VScaleformVariable labelVar =  m_spMovie->GetVariable("_root.countLabel.labelText.text");
+      labelVar.SetString(":)");
+
+      return;
+    }
+    if(pExternalCall->m_sMethodName == "addButton")
+    {
+      Vision::Message.Add(1, "Add 1 button pressed");
+
+      #if CURRENT_AS_VERSION == AS_VERSION_2
+        int countValue = static_cast<int>(m_spMovie->GetVariable("UI.count").GetNumber());
+      #else           
+        VASSERT(m_spMovie->GetVariable("_root.globalCount")->IsNumeric()); // var globalCount:Number;
+        int countValue = static_cast<int>(m_spMovie->GetVariable("_root.globalCount").GetNumber());
+      #endif
+
+      if (countValue == 1)
+      {
+        VScaleformVariable titleVar =  m_spMovie->GetVariable("_root.title.text");
+        titleVar.SetString("Count to 10 to Exit!");
+      }
+      else if (countValue == 10)
+      {
+        VScaleformVariable labelVar =  m_spMovie->GetVariable("_root.countLabel.labelText.text");
+          labelVar.SetString("Bye!");
+        VAppBase::Get()->Quit();
+      }
+
+      return;
+    }
+  }
+}
+
+
 /*
- * Havok SDK - Base file, BUILD(#20140328)
+ * Havok SDK - Base file, BUILD(#20131218)
  * 
- * Confidential Information of Havok.  (C) Copyright 1999-2014
+ * Confidential Information of Havok.  (C) Copyright 1999-2013
  * Telekinesys Research Limited t/a Havok. All Rights Reserved. The Havok
  * Logo, and the Havok buzzsaw logo are trademarks of Havok.  Title, ownership
  * rights, and intellectual property rights in the Havok software remain in
