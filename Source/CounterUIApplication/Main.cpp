@@ -13,6 +13,7 @@
 
 #include <Vision/Runtime/EnginePlugins/ThirdParty/ScaleformEnginePlugin/VScaleformMovie.hpp>
 #include <Vision/Runtime/EnginePlugins/ThirdParty/ScaleformEnginePlugin/VScaleformVariable.hpp>
+#include <Vision/Runtime/EnginePlugins/ThirdParty/ScaleformEnginePlugin/VScaleformValue.hpp>
 #include <Vision/Runtime/EnginePlugins/VisionEnginePlugin/Input/VFreeCamera.hpp>
 
 //#include "GFx/GFx_Player.h"
@@ -24,7 +25,7 @@ VIMPORT IVisPlugin_cl* GetEnginePlugin_vScaleformPlugin();
 
 #define AS_VERSION_2 2
 #define AS_VERSION_3 3
-#define CURRENT_AS_VERSION AS_VERSION_2
+#define CURRENT_AS_VERSION AS_VERSION_3
 
 class CounterUIApplicationClass : public VAppImpl, public IVisCallbackHandler_cl
 {
@@ -50,6 +51,7 @@ public:
 private:
   VString m_sMovieName;
   VScaleformMovieInstancePtr m_spMovie;
+  VScaleformMovieInstancePtr m_spCounter;
   VisScreenMaskPtr m_spMouse;
 };
 
@@ -62,8 +64,8 @@ void CounterUIApplicationClass::SetupAppConfig(VisAppConfig_cl& config)
 
   // Set the initial starting position of our game window and other properties
   // if not in fullscreen. This is only relevant on windows
-  config.m_videoConfig.m_iXRes = 1280; // Set the Window size X if not in fullscreen.
-  config.m_videoConfig.m_iYRes = 720;  // Set the Window size Y if not in fullscreen.
+  config.m_videoConfig.m_iXRes = 640; // Set the Window size X if not in fullscreen.
+  config.m_videoConfig.m_iYRes = 1136;  // Set the Window size Y if not in fullscreen.
   config.m_videoConfig.m_iXPos = 50;   // Set the Window position X if not in fullscreen.
   config.m_videoConfig.m_iYPos = 50;   // Set the Window position Y if not in fullscreen.
 
@@ -130,16 +132,18 @@ void CounterUIApplicationClass::AfterSceneLoaded(bool bLoadingSuccessful)
   m_spMouse->SetVisible(true);
   VScaleformManager::GlobalManager().SetHandleCursorInput(true);
 
-  #if CURRENT_AS_VERSION == AS_VERSION_2
-    m_sMovieName = "Flash\\counter_ui_as2.swf";
-  #else
-    m_sMovieName = "Flash\\counter_ui_as3.swf";
-  #endif
-  
-  m_spMovie = VScaleformManager::GlobalManager().LoadMovie(m_sMovieName);
-  if (m_spMovie==NULL)
+  VString strScoreName = "Flash\\scoreboard.swf";
+  m_spCounter = VScaleformManager::GlobalManager().LoadMovie(strScoreName);
+  if (m_spCounter==NULL)
   {
-    hkvLog::FatalError("Could not load movie: %s", m_sMovieName);
+	  hkvLog::FatalError("Could not load movie: %s", strScoreName);
+  }
+  else
+  {
+	  VScaleformVariable myScore = m_spCounter->GetVariable("_root.myScore");
+	  VScaleformValue value[1];
+	  value[0] = 5000;
+	  myScore.Invoke("add", value);
   }
 }
 
@@ -177,13 +181,21 @@ void CounterUIApplicationClass::OnHandleCallback(IVisCallbackDataObject_cl *pDat
 
       #if CURRENT_AS_VERSION == AS_VERSION_2
         VScaleformVariable counterVar = m_spMovie->GetVariable("UI.count");
-      #else
-        VScaleformVariable counterVar = m_spMovie->GetVariable("_root.globalCount");
-      #endif
+	  #else
+	    VScaleformVariable counterVar = m_spMovie->GetVariable("_root.globalCount");
+	  #endif
 
-      counterVar.SetNumber(0);
-      VScaleformVariable labelVar =  m_spMovie->GetVariable("_root.countLabel.labelText.text");
-      labelVar.SetString(":)");
+#if 1
+		counterVar.SetNumber(0);
+		VScaleformVariable labelVar =  m_spMovie->GetVariable("_root.countLabel.labelText.text");
+		labelVar.SetString(":)");
+
+#else
+		VScaleformValue counter = m_spMovie->GetVariableValue("_root.globalCount");
+		VScaleformValue label =  m_spMovie->GetVariableValue("_root.countLabel.labelText.text");
+		counter.SetNumber(0);
+		label.SetString("-");
+#endif
 
       return;
     }
@@ -194,7 +206,7 @@ void CounterUIApplicationClass::OnHandleCallback(IVisCallbackDataObject_cl *pDat
       #if CURRENT_AS_VERSION == AS_VERSION_2
         int countValue = static_cast<int>(m_spMovie->GetVariable("UI.count").GetNumber());
       #else           
-        VASSERT(m_spMovie->GetVariable("_root.globalCount")->IsNumeric()); // var globalCount:Number;
+        //VASSERT(m_spMovie->GetVariable("_root.globalCount")->IsNumeric()); // var globalCount:Number;
         int countValue = static_cast<int>(m_spMovie->GetVariable("_root.globalCount").GetNumber());
       #endif
 
