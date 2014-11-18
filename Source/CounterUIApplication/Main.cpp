@@ -64,10 +64,10 @@ void CounterUIApplicationClass::SetupAppConfig(VisAppConfig_cl& config)
 
   // Set the initial starting position of our game window and other properties
   // if not in fullscreen. This is only relevant on windows
-  config.m_videoConfig.m_iXRes = 640; // Set the Window size X if not in fullscreen.
-  config.m_videoConfig.m_iYRes = 1136;  // Set the Window size Y if not in fullscreen.
-  config.m_videoConfig.m_iXPos = 50;   // Set the Window position X if not in fullscreen.
-  config.m_videoConfig.m_iYPos = 50;   // Set the Window position Y if not in fullscreen.
+  config.m_videoConfig.m_iXRes = 1136; // Set the Window size X if not in fullscreen.
+  config.m_videoConfig.m_iYRes = 640;  // Set the Window size Y if not in fullscreen.
+  config.m_videoConfig.m_iXPos = -1140;   // Set the Window position X if not in fullscreen.
+  config.m_videoConfig.m_iYPos = -30;   // Set the Window position Y if not in fullscreen.
 
   // Name to be displayed in the windows title bar.
   config.m_videoConfig.m_szWindowTitle = "StandAlone Project Template";
