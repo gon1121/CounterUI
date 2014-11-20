@@ -40,7 +40,6 @@
 				
 			_totalScore += amount;
 			addEventListener(Event.ENTER_FRAME, updateScoreDisplay);
-			
 		}
 		
 		public function set(amount:int):void {
